@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import re
 from typing import Optional, List
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -27,20 +28,19 @@ if not api_key or api_key == "your_openai_api_key_here":
         "Please set it in .env file or environment variables."
     )
 
-# Initialize OpenAI client with API key validation
-# The API key is loaded from environment variables (.env file)
-logger.info(f"OpenAI API Key loaded: {api_key[:10]}...{api_key[-4:]}")
+# Configure OpenAI API
 client = OpenAI(api_key=api_key)
+logger.info(f"OpenAI API Key loaded: {api_key[:10]}...{api_key[-4:]}")
 
 # Default model configuration
-# Available models: gpt-5, gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo
-# gpt-5 is the latest model; falls back to gpt-4o if not available
+# Available models: gpt-5, gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+# gpt-5 is the latest and most capable model
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 logger.info(f"Using model: {DEFAULT_MODEL}")
 
-# Rate limiting: add delay between API calls to avoid 429 errors
+# Rate limiting: add delay between API calls to avoid rate limit errors
 _last_api_call_time = 0
-_min_api_call_interval = 25.0  # Minimum seconds between API calls (for free tier: 3 RPM = 20s between calls)
+_min_api_call_interval = 25.0  # Minimum seconds between API calls (OpenAI free tier rate limits)
 
 
 def rate_limit_wait():
@@ -57,14 +57,14 @@ def rate_limit_wait():
     _last_api_call_time = time.time()
 
 
-def exponential_backoff_retry(func, max_retries: int = 5, base_delay: float = 20.0):
+def exponential_backoff_retry(func, max_retries: int = 5, base_delay: float = 2.0):
     """
     Retry function with exponential backoff and rate limit handling.
     
     Args:
         func: Function to retry
         max_retries: Maximum number of retries
-        base_delay: Base delay in seconds (default 20s for rate limits)
+        base_delay: Base delay in seconds (default 2s)
         
     Returns:
         Function result
@@ -78,44 +78,28 @@ def exponential_backoff_retry(func, max_retries: int = 5, base_delay: float = 20
             error_str = str(e).lower()
             error_msg = str(e)
             
-            # Extract wait time from error message if available
-            wait_time = None
-            if 'try again in' in error_msg:
-                try:
-                    # Extract number from "try again in 20s" or similar
-                    import re
-                    match = re.search(r'try again in (\d+)', error_msg, re.IGNORECASE)
-                    if match:
-                        wait_time = int(match.group(1)) + 2  # Add 2s buffer
-                except:
-                    pass
-            
             # Check for quota issues first (fail fast to avoid unnecessary retries)
-            if 'quota' in error_str or 'insufficient_quota' in error_str or 'exceeded your current quota' in error_str:
+            if 'quota' in error_str or 'resource exhausted' in error_str or 'insufficient_quota' in error_str:
                 error_msg = (
                     "\n" + "="*60 + "\n"
                     "ERROR: OPENAI API QUOTA EXCEEDED\n"
                     "="*60 + "\n"
-                    "Your OpenAI account has no credits/quota remaining.\n\n"
+                    "Your OpenAI API account has no credits/quota remaining.\n\n"
                     "To fix this:\n"
                     "1. Go to: https://platform.openai.com/account/billing\n"
-                    "2. Add payment method or purchase credits\n"
+                    "2. Add a payment method and purchase credits\n"
                     "3. Wait a few minutes for the quota to update\n"
                     "4. Try again\n"
                     "="*60 + "\n"
                 )
                 print(error_msg)
                 logger.error(error_msg)
-                raise Exception("OpenAI API quota exceeded. Please add credits to your account.")
+                raise Exception("OpenAI API quota exceeded. Please check your quota and billing settings.")
             
             # Handle rate limiting errors (429 status code)
-            if 'rate limit' in error_str or '429' in error_str or 'rpm' in error_str:
-                if wait_time is None:
-                    # Default wait: exponential backoff with longer delays
-                    wait_time = base_delay * (2 ** attempt) + 5
-                
+            if 'rate limit' in error_str or '429' in error_str or 'too many requests' in error_str:
+                wait_time = base_delay * (2 ** attempt) + 1
                 logger.warning(f"Rate limited. Retry {attempt + 1}/{max_retries} after {wait_time:.1f}s...")
-                logger.info(f"This is normal for free tier (3 requests/minute limit)")
                 time.sleep(wait_time)
             elif attempt == max_retries - 1:
                 logger.error(f"Failed after {max_retries} retries: {e}")
@@ -125,6 +109,39 @@ def exponential_backoff_retry(func, max_retries: int = 5, base_delay: float = 20
                 logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s: {str(e)[:100]}")
                 time.sleep(delay)
     return None
+
+
+def _extract_json_from_response(text: str) -> dict:
+    """
+    Extract JSON from OpenAI response text.
+    
+    OpenAI may return JSON wrapped in markdown code blocks or with extra text.
+    This function extracts the JSON portion.
+    
+    Args:
+        text: Raw response text from OpenAI
+        
+    Returns:
+        Parsed JSON dictionary
+    """
+    # Try to find JSON in markdown code blocks
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if json_match:
+        return json.loads(json_match.group(1))
+    
+    # Try to find JSON object directly
+    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except:
+            pass
+    
+    # If no JSON found, try parsing the whole text
+    try:
+        return json.loads(text)
+    except:
+        raise ValueError(f"Could not extract JSON from response: {text[:200]}")
 
 
 def normalize_target(
@@ -186,7 +203,7 @@ Output ONLY valid JSON in this exact format:
 }}
 
 Be specific and avoid generic terms. Focus on distinctive offerings and customer types.
-"""
+Do not include any text outside the JSON object."""
 
     def call_api():
         logger.debug(f"Sending request to OpenAI API (model: {model})")
@@ -194,22 +211,22 @@ Be specific and avoid generic terms. Focus on distinctive offerings and customer
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "You are a precise data extraction assistant. Always output valid JSON only."},
+                    {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
                 response_format={"type": "json_object"},
-                timeout=60.0  # 60 second timeout
+                temperature=0.3
             )
-            logger.debug(f"Received response from OpenAI ({len(response.choices[0].message.content)} chars)")
-            return response.choices[0].message.content
+            response_text = response.choices[0].message.content
+            logger.debug(f"Received response from OpenAI ({len(response_text)} chars)")
+            return response_text
         except Exception as e:
             logger.error(f"API call failed: {e}")
             raise
     
     try:
         response_text = exponential_backoff_retry(call_api)
-        result = json.loads(response_text)
+        result = _extract_json_from_response(response_text)
         return NormalizedTarget(**result)
     except Exception as e:
         logger.error(f"Failed to normalize target: {e}")
@@ -293,23 +310,24 @@ Output ONLY valid JSON in this exact format:
     "sic_industry": "SIC Name" or null,
     "evidence_urls": ["url1", "url2", "url3"]
 }}
-"""
+
+Do not include any text outside the JSON object."""
 
     def call_api():
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a precise data extraction assistant. Extract only facts present in the provided text. Output valid JSON only."},
+                {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.2
         )
         return response.choices[0].message.content
     
     try:
         response_text = exponential_backoff_retry(call_api)
-        result = json.loads(response_text)
+        result = _extract_json_from_response(response_text)
         
         # Ensure evidence_urls is set
         if "evidence_urls" not in result or not result["evidence_urls"]:
@@ -318,6 +336,12 @@ Output ONLY valid JSON in this exact format:
         # Ensure url is set
         if not result.get("url") and evidence_urls:
             result["url"] = evidence_urls[0]
+        
+        # Ensure required string fields are not None
+        if not result.get("business_activity") or result.get("business_activity") is None:
+            result["business_activity"] = "Information not available"
+        if not result.get("customer_segment") or result.get("customer_segment") is None:
+            result["customer_segment"] = "Information not available"
         
         return CandidateExtraction(**result)
     except Exception as e:
@@ -400,23 +424,24 @@ failure_type should be:
 - "different_segments" if customer segments don't overlap
 - "insufficient_info" if we can't determine from available data
 - null if is_plausible is true
-"""
+
+Do not include any text outside the JSON object."""
 
     def call_api():
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a validation assistant. Output valid JSON only."},
+                {"role": "system", "content": "You are a helpful assistant that outputs only valid JSON."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.3
         )
         return response.choices[0].message.content
     
     try:
         response_text = exponential_backoff_retry(call_api)
-        result = json.loads(response_text)
+        result = _extract_json_from_response(response_text)
         
         # Parse failure_type
         failure_type_str = result.get("failure_type")
@@ -440,5 +465,3 @@ failure_type should be:
             reason="Validation check failed, defaulting to plausible",
             failure_type=None
         )
-
-

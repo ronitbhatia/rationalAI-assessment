@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
         '--model',
         type=str,
         default='gpt-5',
-        help='OpenAI model to use (default: gpt-5 - latest). Options: gpt-5, gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5-turbo'
+        help='OpenAI model to use (default: gpt-5 - latest). Options: gpt-5, gpt-4o, gpt-4-turbo, gpt-3.5-turbo'
     )
     parser.add_argument(
         '--max-final',
@@ -175,14 +175,14 @@ def main():
         sys.exit(1)
     except Exception as e:
         error_msg = str(e)
-        if 'quota' in error_msg.lower() or 'insufficient_quota' in error_msg.lower():
+        if 'quota' in error_msg.lower() or 'insufficient_quota' in error_msg.lower() or 'resource exhausted' in error_msg.lower():
             print("\n" + "="*60)
             print("ERROR: OPENAI API QUOTA EXCEEDED")
             print("="*60)
-            print("Your OpenAI account has no credits remaining.")
+            print("Your OpenAI API account has no credits/quota remaining.")
             print("\nTo fix:")
             print("1. Go to: https://platform.openai.com/account/billing")
-            print("2. Add payment method and purchase credits")
+            print("2. Add a payment method and purchase credits")
             print("3. Wait a few minutes, then try again")
             print("="*60 + "\n")
         else:
@@ -204,7 +204,7 @@ def main():
         print("\nSuggestions:")
         print("  - Lower threshold: --min-score 0.25")
         print("  - Increase candidates: --max-candidates 50")
-        print("  - Try different model: --model gpt-3.5-turbo")
+        print("  - Try different model: --model gpt-4o")
         print("="*60 + "\n")
         logger.warning("No comparables found")
         sys.exit(0)

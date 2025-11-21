@@ -183,6 +183,26 @@ Each line contains:
 }
 ```
 
+## Output Files
+
+The pipeline generates three types of output files:
+
+1. **CSV File** (`<output_name>.csv`): Human-readable spreadsheet format
+2. **Parquet File** (`<output_name>.parquet`): Efficient binary format for data analysis
+3. **Provenance Log** (`<output_name>.provenance.jsonl`): Line-delimited JSON tracking data sources
+
+### Sample Output
+
+For the Huron Consulting Group example, the following output files are included in this repository:
+
+- `huron_comparables.csv`: CSV format with 8 comparable companies
+- `huron_comparables.parquet`: Parquet format (same data)
+- `huron_comparables.provenance.jsonl`: Provenance log of data sources
+- `RESULTS_SUMMARY.md`: Detailed analysis of the results
+- `HOW_TO_READ_OUTPUT.md`: Guide for interpreting the output files
+
+See `HOW_TO_READ_OUTPUT.md` for detailed instructions on reading and analyzing the output files.
+
 ## Example: Huron Consulting Group
 
 ```bash

@@ -37,11 +37,13 @@ env/
 *.swo
 *~
 
-# Output files
+# Output files (exclude sample outputs for submission)
 *.parquet
+!huron_comparables.parquet
 *.csv
-*.provenance.jsonl
+!huron_comparables.csv
 *.jsonl
+!huron_comparables.provenance.jsonl
 
 # Logs
 *.log

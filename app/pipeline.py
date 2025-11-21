@@ -190,8 +190,8 @@ def validate_and_score_candidate(
         validation_score = compute_validation_score(normalized_target, candidate)
         
         # Run validation checks
-        product_overlap = validate_product_overlap(normalized_target, candidate)
-        segment_overlap = validate_segment_overlap(normalized_target, candidate)
+        product_overlap = validate_product_overlap(normalized_target, candidate, min_overlaps=1)  # More lenient: 1 instead of 2
+        segment_overlap = validate_segment_overlap(normalized_target, candidate, min_overlaps=1)
         public_listing = validate_public_listing(candidate)
         not_unrelated = validate_not_unrelated(normalized_target, candidate)
         
@@ -203,40 +203,40 @@ def validate_and_score_candidate(
             model=model
         )
         
-        # Combine checks: public_listing is preferred but not required if other checks pass
-        # Allow candidates without ticker if they score well and pass other checks
+        # More lenient automated checks: at least one overlap check should pass
         passes_automated = (
-            product_overlap and
-            segment_overlap and
+            (product_overlap or segment_overlap) and  # At least one overlap
             not_unrelated
         )
         
-        # More lenient validation logic:
-        # 1. Very high score (>= 0.7) - always pass (failsafe)
-        # 2. High score (>= 0.5) with LLM validation - pass
-        # 3. Medium score (>= min_score) with automated checks AND LLM validation - pass
-        # 4. Public listing is preferred but not required if score is good
-        if validation_score >= 0.7:
+        # Very lenient validation logic:
+        # 1. Very high score (>= 0.6) - always pass (failsafe)
+        # 2. Medium-high score (>= 0.4) with LLM validation OR automated checks - pass
+        # 3. Low score (>= min_score) with automated checks OR LLM validation - pass
+        # 4. Public listing is preferred but not required
+        if validation_score >= 0.6:
             # High score failsafe - always accept
             passes = True
-        elif validation_score >= 0.5 and validation_check.is_plausible:
-            # Good score with LLM validation - accept
-            passes = True
+            logger.info(f"Accepting {candidate.name} with high score: {validation_score:.3f}")
+        elif validation_score >= 0.4:
+            # Medium-high score: need LLM validation OR automated checks
+            passes = validation_check.is_plausible or passes_automated
+            if passes:
+                logger.info(f"Accepting {candidate.name} with medium score: {validation_score:.3f} (plausible={validation_check.is_plausible}, auto={passes_automated})")
         elif validation_score >= min_score:
-            # Standard threshold: need automated checks AND LLM validation
-            # Public listing preferred but not required
-            passes = passes_automated and validation_check.is_plausible
-            # If public listing is missing but everything else passes, still accept if score is decent
-            if not public_listing and passes and validation_score >= 0.4:
-                logger.debug(f"Accepting {candidate.name} without public listing (good score and validation)")
+            # Standard threshold: need automated checks OR LLM validation
+            passes = passes_automated or validation_check.is_plausible
+            if passes:
+                logger.info(f"Accepting {candidate.name} with score: {validation_score:.3f} (plausible={validation_check.is_plausible}, auto={passes_automated})")
         else:
             passes = False
         
         if not passes:
-            logger.debug(
+            logger.info(
                 f"Rejected {candidate.name}: score={validation_score:.3f}, "
                 f"product_overlap={product_overlap}, segment_overlap={segment_overlap}, "
-                f"public_listing={public_listing}, is_plausible={validation_check.is_plausible}"
+                f"public_listing={public_listing}, is_plausible={validation_check.is_plausible}, "
+                f"not_unrelated={not_unrelated}"
             )
             return None
         
